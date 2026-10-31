@@ -13,16 +13,21 @@
   const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
   const lerp = (a, b, t) => a + (b - a) * t;
   const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const smooth = (t) => t * t * (3 - 2 * t);
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const finePointer = matchMedia('(pointer: fine)').matches;
+  const TAU = Math.PI * 2;
+  const DEG = 180 / Math.PI;
 
-  // ---------------------------------------------------------------- geometry
-  const YEAR_W = 160;
-  const X = (year) => (year - D.start) * YEAR_W;
-  const NOW_X = X(D.now);
-  const FOG_X0 = NOW_X + 70;
-  const FOG_X1 = NOW_X + 900;
+  // ---------------------------------------------------------------- time → radius
+  const R0 = 30;          // the self marker
+  const RPY = 44;         // world units per year
+  const R = (year) => R0 + Math.max(0, year - D.start) * RPY;
+  const R_NOW = R(D.now);
+  const STUB = 74;        // how far live branches run past the edge
+  const polar = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
 
+  // ---------------------------------------------------------------- data
   const threads = D.threads.map((t, i) => {
     let from = t.start;
     const phases = t.phases.map((p) => {
@@ -35,75 +40,68 @@
   });
   const byId = Object.fromEntries(threads.map((t) => [t.id, t]));
 
-  // regions → lanes. Overlapping threads in a region get their own slot.
-  const SLOT = 26, GAP = 50, CORE = 84;
-  const regions = D.regions.map((r) => ({ ...r, threads: threads.filter((t) => t.region === r.id) }));
+  // regions → zones (slices of the circle, sized by how much happened in them)
+  const regions = D.regions.map((r, i) => ({ ...r, seed: i * 2.3 + 1, threads: threads.filter((t) => t.region === r.id) }));
+  const weight = (r) => r.threads.length + 1.2;
+  const totalW = regions.reduce((s, r) => s + weight(r), 0);
+  let ang = -Math.PI / 2 - (weight(regions[0]) / totalW) * Math.PI;
   regions.forEach((r) => {
-    const ends = [];
-    r.threads.slice().sort((a, b) => a.start - b.start).forEach((t) => {
-      let i = ends.findIndex((e) => e + 0.5 <= t.start);
-      if (i < 0) { i = ends.length; ends.push(t.end); } else ends[i] = t.end;
-      t.slot = i;
-    });
-    r.slots = Math.max(1, ends.length);
+    const span = (weight(r) / totalW) * TAU;
+    r.a0 = ang; r.a1 = ang + span; r.mid = ang + span / 2;
+    ang += span;
+    r.start = Math.min(...r.threads.map((t) => t.start));
+    const pad = span * 0.1, n = r.threads.length;
+    r.threads.forEach((t, i) => { t.angle = r.a0 + pad + (i + 0.5) * ((span - 2 * pad) / n); t.zone = r; });
+    const roots = r.threads.filter((t) => !t.from);
+    r.roadEnd = Math.max(...roots.map((t) => t.start));
   });
-  let up = -CORE, down = CORE;
-  regions.filter((r) => r.side < 0).reverse().forEach((r) => {
-    r.y = up; r.dir = -1; up -= (r.slots - 1) * SLOT + GAP;
-  });
-  regions.filter((r) => r.side > 0).forEach((r) => {
-    r.y = down; r.dir = 1; down += (r.slots - 1) * SLOT + GAP;
-  });
-  const MIN_Y = up + GAP - 40;
-  const MAX_Y = down - GAP + 40;
-  const AXIS_Y = MAX_Y + 46;
-  const CONTENT_H = AXIS_Y + 30 - MIN_Y;
-  const CONTENT_CY = (MIN_Y + AXIS_Y + 30) / 2;
-  const regionOf = Object.fromEntries(regions.map((r) => [r.id, r]));
-  threads.forEach((t) => { const r = regionOf[t.region]; t.laneY = r.y + r.dir * t.slot * SLOT; });
 
-  const yAt = (t, x) => t.laneY + 4 * Math.sin(x / 130 + t.seed) + 2.5 * Math.sin(x / 53 + t.seed * 1.9);
+  const roadA = (r, rad) => r.mid + 0.05 * Math.sin(rad / 80 + r.seed);
+  const threadA = (t, rad) => t.angle + 0.028 * Math.sin(rad / 55 + t.seed) + 0.012 * Math.sin(rad / 23 + t.seed * 2);
+  const borderA = (r, rad) => r.a0 + 0.035 * Math.sin(rad / 90 + r.seed * 1.7) + 0.018 * Math.sin(rad / 31 + r.seed);
 
-  function buildPoints(t) {
-    const xs = X(t.start), xe = X(t.end);
-    const parent = t.from ? byId[t.from] : null;
-    const oy = parent ? yAt(parent, xs) : 0;
-    const bend = Math.min(90, (xe - xs) * 0.55);
-    const px = xs + bend, py = yAt(t, px);
+  function radialPts(r0, r1, angleAt, step = 7) {
+    const n = Math.max(2, Math.ceil((r1 - r0) / step));
     const pts = [];
-    for (let i = 0; i <= 18; i++) {
-      const u = i / 18, m = 1 - u;
-      const bx = m * m * m * xs + 3 * m * m * u * (xs + bend * 0.5) + 3 * m * u * u * (px - bend * 0.5) + u * u * u * px;
-      const by = (m * m * m + 3 * m * m * u) * oy + (3 * m * u * u + u * u * u) * py;
-      pts.push([bx, by]);
+    for (let i = 0; i <= n; i++) {
+      const rad = lerp(r0, r1, i / n);
+      const a = angleAt(rad);
+      pts.push([rad * Math.cos(a), rad * Math.sin(a), rad, a]);
     }
-    for (let x = px + 12; x < xe; x += 12) pts.push([x, yAt(t, x)]);
-    if (xe > px) pts.push([xe, yAt(t, xe)]);
-    t.origin = [xs, oy];
-    t.bendX = px;
     return pts;
   }
 
-  function yOnPts(pts, x) {
-    if (x <= pts[0][0]) return pts[0][1];
+  function buildThread(t) {
+    const rs = R(t.start), re = R(t.end);
+    const a0 = t.from ? threadA(byId[t.from], rs) : roadA(t.zone, rs);
+    const bend = Math.max(10, Math.min(90, (re - rs) * 0.6));
+    const n = Math.max(14, Math.ceil((re - rs) / 6));
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const rad = lerp(rs, re, i / n);
+      const s = smooth(clamp((rad - rs) / bend));
+      const a = lerp(a0, threadA(t, rad), s);
+      pts.push([rad * Math.cos(a), rad * Math.sin(a), rad, a]);
+    }
+    t.pts = pts;
+    t.bendR = rs + bend;
+  }
+  threads.forEach(buildThread);
+
+  function atR(pts, rad) {
+    if (rad <= pts[0][2]) return pts[0];
     for (let i = 1; i < pts.length; i++) {
-      if (pts[i][0] >= x) {
-        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
-        return lerp(y0, y1, (x - x0) / Math.max(1e-6, x1 - x0));
+      if (pts[i][2] >= rad) {
+        const p = pts[i - 1], q = pts[i], u = (rad - p[2]) / Math.max(1e-6, q[2] - p[2]);
+        return [lerp(p[0], q[0], u), lerp(p[1], q[1], u), rad, lerp(p[3], q[3], u)];
       }
     }
-    return pts[pts.length - 1][1];
+    return pts[pts.length - 1];
   }
-
-  function slicePts(pts, a, b) {
-    const out = [[a, yOnPts(pts, a)]];
-    pts.forEach((p) => { if (p[0] > a && p[0] < b) out.push(p); });
-    out.push([b, yOnPts(pts, b)]);
-    return out;
-  }
+  const slice = (pts, r0, r1) => [atR(pts, r0), ...pts.filter((p) => p[2] > r0 && p[2] < r1), atR(pts, r1)];
   const toD = (pts) => 'M' + pts.map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L');
 
-  // ---------------------------------------------------------------- sizes
+  // ---------------------------------------------------------------- sizes and states
   const RATE = { glow: 140, blink: 30, flicker: 70 };
   function sizeAt(t, year) {
     let kb = 0;
@@ -125,7 +123,7 @@
   const span = (t) => `${yearLabel(t.start)} to ${t.ended ? yearLabel(t.end) : 'now'}`;
   const STATE_WORD = { glow: 'writing', blink: 'on and off', flicker: 'uncertain', saved: 'saved' };
 
-  // ---------------------------------------------------------------- noise + contours
+  // ---------------------------------------------------------------- terrain contours
   function noise2(x, y) {
     const h = (i, j) => { const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return s - Math.floor(s); };
     const xi = Math.floor(x), yi = Math.floor(y);
@@ -141,24 +139,23 @@
     1: [[3, 2]], 2: [[2, 1]], 3: [[3, 1]], 4: [[0, 1]], 5: [[3, 0], [2, 1]], 6: [[0, 2]], 7: [[3, 0]],
     8: [[3, 0]], 9: [[0, 2]], 10: [[0, 1], [3, 2]], 11: [[0, 1]], 12: [[3, 1]], 13: [[2, 1]], 14: [[3, 2]],
   };
-  // Contour segments, bucketed per grid cell so only the visible part is drawn.
   function contourSegments() {
-    const step = 32, x0 = -1100, x1 = FOG_X1 + 1100, y0 = MIN_Y - 2700, y1 = AXIS_Y + 2700;
-    const nx = Math.ceil((x1 - x0) / step) + 1, ny = Math.ceil((y1 - y0) / step) + 1;
+    const step = 22, ext = R_NOW + 40;
+    const x0 = -ext, y0 = -ext;
+    const nx = Math.ceil((2 * ext) / step) + 1, ny = nx;
     const v = new Float32Array(nx * ny);
-    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) v[j * nx + i] = fbm((x0 + i * step) / 480, (y0 + j * step) / 480);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) v[j * nx + i] = fbm((x0 + i * step) / 360 + 3, (y0 + j * step) / 360 + 7);
     const levels = [];
     for (let L = 0.28; L < 0.78; L += 0.05) levels.push(L);
     const cells = nx - 1, rows = ny - 1;
-    const buckets = [[], []]; // minor, major: flat [x1,y1,x2,y2,...] per cell
+    const buckets = [[], []];
     for (let c = 0; c < 2; c++) for (let n = 0; n < cells * rows; n++) buckets[c].push([]);
     levels.forEach((L, li) => {
       const cls = li % 3 === 1 ? 1 : 0;
       for (let j = 0; j < rows; j++) {
         for (let i = 0; i < cells; i++) {
           const a = v[j * nx + i], b = v[j * nx + i + 1], c = v[(j + 1) * nx + i + 1], d = v[(j + 1) * nx + i];
-          const idx = (a > L) << 3 | (b > L) << 2 | (c > L) << 1 | (d > L);
-          const pairs = EDGE_PAIRS[idx];
+          const pairs = EDGE_PAIRS[(a > L) << 3 | (b > L) << 2 | (c > L) << 1 | (d > L)];
           if (!pairs) continue;
           const x = x0 + i * step, y = y0 + j * step;
           const pt = (e) => {
@@ -182,7 +179,6 @@
     return { x0, y0, step, cells, rows, minor: pack(buckets[0]), major: pack(buckets[1]) };
   }
 
-  // ---------------------------------------------------------------- terrain (canvas)
   const T = contourSegments();
   const tCan = $('terrain'), lCan = $('terrain-lit');
   const tCtx = tCan.getContext('2d'), lCtx = lCan.getContext('2d');
@@ -197,15 +193,21 @@
     { ctx: tCtx, minor: '#37312A', major: '#463E31' },
     { ctx: lCtx, minor: '#8F7C4C', major: '#D4AF37' },
   ];
-  function drawTerrain(vx, vy, w, h) {
-    const s = (innerWidth * dpr) / w; // device px per world unit
-    const i0 = clamp(Math.floor((vx - T.x0) / T.step) - 1, 0, T.cells - 1), i1 = clamp(Math.ceil((vx + w - T.x0) / T.step) + 1, 0, T.cells - 1);
-    const j0 = clamp(Math.floor((vy - T.y0) / T.step) - 1, 0, T.rows - 1), j1 = clamp(Math.ceil((vy + h - T.y0) / T.step) + 1, 0, T.rows - 1);
+  // Only the explored circle is charted; outside it the map is blank.
+  function drawTerrain(vx, vy, w, h, known) {
+    const s = (innerWidth * dpr) / w;
+    const bx0 = Math.max(vx, -known), bx1 = Math.min(vx + w, known);
+    const by0 = Math.max(vy, -known), by1 = Math.min(vy + h, known);
+    const i0 = clamp(Math.floor((bx0 - T.x0) / T.step) - 1, 0, T.cells - 1), i1 = clamp(Math.ceil((bx1 - T.x0) / T.step) + 1, 0, T.cells - 1);
+    const j0 = clamp(Math.floor((by0 - T.y0) / T.step) - 1, 0, T.rows - 1), j1 = clamp(Math.ceil((by1 - T.y0) / T.step) + 1, 0, T.rows - 1);
     INK.forEach(({ ctx, minor, major }) => {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.globalCompositeOperation = 'source-over';
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
       ctx.setTransform(s, 0, 0, s, -vx * s, -vy * s);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(0, 0, known, 0, TAU);
+      ctx.clip();
       [[T.minor, minor, 1], [T.major, major, 1.35]].forEach(([set, color, lw]) => {
         ctx.beginPath();
         for (let j = j0; j <= j1; j++) {
@@ -221,128 +223,104 @@
         ctx.lineWidth = (lw * dpr) / s;
         ctx.stroke();
       });
-      // the terrain thins out into the fog after "now"
-      ctx.globalCompositeOperation = 'destination-in';
-      const g = ctx.createLinearGradient(NOW_X, 0, FOG_X0 + 340, 0);
-      g.addColorStop(0, 'rgba(0,0,0,1)');
-      g.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(vx, vy, w, h);
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
     });
   }
 
-  // ---------------------------------------------------------------- build the SVG
+  // ---------------------------------------------------------------- SVG
   const svg = $('map');
   const stage = svg.parentElement;
-    const defs = svgEl('defs', {}, svg);
-
-  const fogBlob = svgEl('radialGradient', { id: 'fogBlob' }, defs);
-  svgEl('stop', { offset: '0', 'stop-color': '#4A4236', 'stop-opacity': '.55' }, fogBlob);
-  svgEl('stop', { offset: '1', 'stop-color': '#4A4236', 'stop-opacity': '0' }, fogBlob);
-  const fogEdge = svgEl('linearGradient', { id: 'fogEdge', gradientUnits: 'userSpaceOnUse', x1: NOW_X - 40, x2: FOG_X0 + 260, y1: 0, y2: 0 }, defs);
-  svgEl('stop', { offset: '0', 'stop-color': '#211E18', 'stop-opacity': '0' }, fogEdge);
-  svgEl('stop', { offset: '1', 'stop-color': '#211E18', 'stop-opacity': '.9' }, fogEdge);
-
+  const defs = svgEl('defs', {}, svg);
   const revealClip = svgEl('clipPath', { id: 'reveal' }, defs);
-  const revealRect = svgEl('rect', { x: -3000, y: -6000, width: 3000, height: 12000 }, revealClip);
+  const revealCircle = svgEl('circle', { cx: 0, cy: 0, r: R0 }, revealClip);
 
-  // fog over the unknown
-  const fog = svgEl('g', { class: 'fog' }, svg);
-  svgEl('rect', { x: NOW_X - 40, y: -6000, width: FOG_X1 - NOW_X + 6000, height: 12000, fill: 'url(#fogEdge)' }, fog);
-  const blobs = svgEl('g', {}, fog);
-  for (let i = 0; i < 9; i++) {
-    const r = noise2(i * 3.1, 7.7);
-    svgEl('ellipse', {
-      class: 'fog-blob',
-      cx: (FOG_X0 + 40 + (i % 3) * 260 + r * 120).toFixed(0),
-      cy: (MIN_Y + (CONTENT_H * (Math.floor(i / 3) + 0.5)) / 3 + (r - 0.5) * 120).toFixed(0),
-      rx: (260 + r * 180).toFixed(0), ry: (150 + r * 110).toFixed(0), fill: 'url(#fogBlob)',
-    }, blobs);
-  }
-
-  // axis
-  const axis = svgEl('g', { class: 'axis' }, svg);
-  const yearTexts = [];
-  for (let y = D.start; y <= Math.floor(D.now); y++) {
-    svgEl('line', { x1: X(y), x2: X(y), y1: AXIS_Y - 6, y2: AXIS_Y }, axis);
-    yearTexts.push(Object.assign(svgEl('text', { x: X(y), y: AXIS_Y + 16, 'text-anchor': 'middle' }, axis), { textContent: y, year: y }));
-  }
-  svgEl('line', { class: 'now-line', x1: NOW_X, x2: NOW_X, y1: MIN_Y + 20, y2: AXIS_Y }, axis);
-  const nowText = svgEl('text', { class: 'now-text', x: NOW_X, y: AXIS_Y + 16, 'text-anchor': 'middle' }, axis);
-  nowText.textContent = 'now';
+  // zone borders and the main road into each zone
+  const charted = svgEl('g', { 'clip-path': 'url(#reveal)' }, svg);
+  regions.forEach((r) => {
+    svgEl('path', { class: 'border', d: toD(radialPts(R0 + 14, R_NOW, (rad) => borderA(r, rad))) }, charted);
+  });
+  regions.forEach((r) => {
+    r.road = svgEl('path', { class: 'road', d: toD(radialPts(R0 * 0.6, R(r.roadEnd), (rad) => roadA(r, rad))) }, charted);
+  });
 
   // threads
-  const lines = svgEl('g', { class: 'threads', 'clip-path': 'url(#reveal)' }, svg);
-  svgEl('path', { class: 'core', d: `M${X(D.start)} 0 L${NOW_X} 0` }, lines);
-  const overlay = svgEl('g', { class: 'overlay' }, svg);
   const nodes = [];
-
   threads.forEach((t) => {
-    const pts = buildPoints(t);
-    t.pts = pts;
-    const g = svgEl('g', { class: 'thread' }, lines);
+    const g = svgEl('g', { class: 'thread' }, charted);
     t.g = g;
     t.phases.forEach((p) => {
-      const seg = slicePts(pts, Math.max(X(p.from), pts[0][0]), X(p.to ?? D.now));
+      const seg = slice(t.pts, R(p.from), R(p.to ?? D.now));
       if (p.state === 'glow') svgEl('path', { class: 'under', d: toD(seg) }, g);
       svgEl('path', { class: `ph ph-${p.state}`, d: toD(seg) }, g);
     });
-    nodes.push(svgEl('circle', { class: 'node', cx: t.origin[0], cy: t.origin[1], r: 3 }, g));
-    if (t.ended) nodes.push(svgEl('circle', { class: 'node', cx: X(t.end), cy: yOnPts(pts, X(t.end)), r: 3 }, g));
-    t.hit = svgEl('path', { class: 'hit', d: toD(pts) }, g);
+    nodes.push(svgEl('circle', { class: 'node', cx: t.pts[0][0], cy: t.pts[0][1], r: 3 }, g));
+    if (t.ended) {
+      const e = t.pts[t.pts.length - 1];
+      nodes.push(svgEl('circle', { class: 'node', cx: e[0], cy: e[1], r: 3 }, g));
+    }
+    t.hit = svgEl('path', { class: 'hit', d: toD(t.pts) }, g);
     t.hit.__thread = t;
-
-    t.label = svgEl('text', { class: 'label', opacity: 0 }, overlay);
-    t.labelName = svgEl('tspan', { class: 'name' }, t.label);
-    t.labelName.textContent = t.file;
-    t.labelSize = svgEl('tspan', { class: 'size', dx: '0.8em' }, t.label);
-    t.tipDot = svgEl('circle', { class: 'tipdot', r: 2.5, opacity: 0 }, overlay);
   });
 
-  // region + core labels (pinned to the left edge of the view)
+  // the edge of the known, its year, and the zone names around it
+  const overlay = svgEl('g', { class: 'overlay' }, svg);
+  const coast = svgEl('circle', { class: 'coast', cx: 0, cy: 0, r: R0 }, overlay);
+  const ringYear = svgEl('text', { class: 'ring-year', 'text-anchor': 'end' }, overlay);
   regions.forEach((r) => {
-    const outer = r.y + r.dir * (r.slots - 1) * SLOT;
-    r.topLane = r.dir < 0 ? outer : r.y;
-    r.text = svgEl('text', { class: 'region-label' }, overlay);
+    r.text = svgEl('text', { class: 'zone-label' }, overlay);
     r.text.textContent = r.label;
   });
-  const coreLabel = svgEl('text', { class: 'core-label', y: -10 }, overlay);
-  coreLabel.textContent = 'self.swayam';
 
-  // head
-  const head = svgEl('g', {}, overlay);
-  const halo = svgEl('circle', { class: 'head-halo', r: 16 }, head);
-  const headDot = svgEl('circle', { class: 'head-dot', r: 5.5 }, head);
-
-  // the unknown
+  // live branches run past the edge and end in next.swayam
   const next = svgEl('g', { class: 'next' }, overlay);
-  const nextPath = svgEl('path', { class: 'next-path', d: `M${NOW_X} 0 L${FOG_X0 + 150} 0` }, next);
-  const nextDot = svgEl('circle', { cx: FOG_X0 + 150, cy: 0, r: 4, fill: 'none', stroke: '#D4AF37', 'stroke-opacity': '.6' }, next);
-  const nextName = svgEl('text', { class: 'next-label', x: FOG_X0 + 170, y: -6 }, next);
-  nextName.textContent = 'next.swayam';
-  const nextSize = svgEl('text', { class: 'next-label next-size', x: FOG_X0 + 170, y: 12 }, next);
-  nextSize.textContent = '0 KB';
-  const unknownLabel = svgEl('text', { class: 'region-label', x: FOG_X0 + 170, y: MIN_Y + 30 }, next);
-  unknownLabel.textContent = 'unknown/';
+  const live = threads.filter((t) => !t.ended);
+  live.forEach((t) => {
+    const pts = radialPts(R_NOW, R_NOW + STUB, (rad) => threadA(t, rad), 6);
+    t.stub = svgEl('path', { class: 'stub', d: toD(pts) }, next);
+    const e = pts[pts.length - 1];
+    t.stubEnd = e;
+    t.stubNode = svgEl('circle', { class: 'stub-node', cx: e[0], cy: e[1], r: 3 }, next);
+    t.nextText = svgEl('text', { class: 'next-label' }, next);
+    t.nextText.textContent = 'next.swayam';
+  });
+  const unknownTexts = regions.filter((r, i) => i % 2 === 0).map((r) => {
+    const tx = svgEl('text', { class: 'unknown-label', 'text-anchor': 'middle' }, next);
+    tx.textContent = 'unknown';
+    tx.angle = r.a0;
+    return tx;
+  });
+
+  // thread labels sit along the last stretch of their own line
+  const labels = svgEl('g', {}, overlay);
+  threads.forEach((t) => {
+    t.label = svgEl('text', { class: 'label', opacity: 0 }, labels);
+    t.labelName = svgEl('tspan', { class: 'name' }, t.label);
+    t.labelName.textContent = t.file;
+    t.labelSize = svgEl('tspan', { class: 'size', dx: '0.7em' }, t.label);
+    t.tipDot = svgEl('circle', { class: 'tipdot', r: 2.5, opacity: 0 }, labels);
+  });
+
+  // self at the centre
+  const centre = svgEl('g', {}, overlay);
+  const halo = svgEl('circle', { class: 'head-halo', r: 16 }, centre);
+  const centreRing = svgEl('circle', { class: 'centre-ring', r: 11 }, centre);
+  const centreDot = svgEl('circle', { class: 'head-dot', r: 5 }, centre);
+  const centreLabel = svgEl('text', { class: 'core-label', 'text-anchor': 'middle' }, overlay);
+  centreLabel.textContent = 'self.swayam';
 
   // ---------------------------------------------------------------- HUD
   const lettersEl = $('letters');
   const letterLis = D.letters.map((l) => {
     const li = document.createElement('li');
     li.innerHTML = `<span class="ch">${l.ch}</span><span class="w">${l.word}</span>`;
+    li.title = l.line;
     lettersEl.appendChild(li);
     return li;
   });
-  $('manifesto').innerHTML =
-    '<div><ol>' +
-    D.letters.map((l) => `<li><span class="ch">${l.ch}</span><span class="word">${l.word}</span><span class="line">${l.line}</span></li>`).join('') +
-    '</ol><p class="close">I am my first project.</p><p class="after">next.swayam · 0 KB · the map is still being drawn</p></div>';
 
-  // scroll segments: intro, the beats, then the manifesto
-  const segs = [{ kind: 'intro', weight: 0.07, from: D.start, to: D.start }];
+  const segs = [{ kind: 'intro', weight: 0.06, from: D.start, to: D.start }];
   D.beats.forEach((b, i) => segs.push({ kind: 'beat', beat: b, index: i, weight: b.weight, from: b.from, to: b.to }));
-  segs.push({ kind: 'end', weight: 0.06, from: D.now, to: D.now });
+  segs.push({ kind: 'end', weight: 0.04, from: D.now, to: D.now });
   const total = segs.reduce((s, g) => s + g.weight, 0);
   let acc = 0;
   segs.forEach((g) => { g.p0 = acc / total; acc += g.weight; g.p1 = acc / total; });
@@ -355,12 +333,11 @@
   }
 
   // ---------------------------------------------------------------- input
-  const pointer = { x: innerWidth * 0.62, y: innerHeight * 0.45, moved: -1e9 };
+  const pointer = { x: innerWidth * 0.5, y: innerHeight * 0.5, moved: -1e9 };
   const cursor = $('cursor');
   if (finePointer && !reduced) document.documentElement.classList.add('has-cursor');
   const tip = $('tip');
-  let hot = null;
-  let tipTimer = 0;
+  let hot = null, tipTimer = 0;
 
   addEventListener('pointermove', (e) => {
     pointer.x = e.clientX; pointer.y = e.clientY; pointer.moved = performance.now();
@@ -380,9 +357,10 @@
     t.g.classList.add('hot');
     cursor.classList.add('hot');
     const st = stateAt(t, state.year) || 'glow';
+    const onward = !t.ended && state.year >= D.now - 0.01 ? '<div class="m">continues as next.swayam · 0 KB</div>' : '';
     tip.innerHTML =
       `<div class="f">${t.region}/<b>${t.file}</b></div>` +
-      `<div class="m">${span(t)} · ${STATE_WORD[st]} · ${fmt(sizeAt(t, state.year))}</div>` +
+      `<div class="m">${span(t)} · ${STATE_WORD[st]} · ${fmt(sizeAt(t, state.year))}</div>` + onward +
       (t.note ? `<div class="n">${t.note}</div>` : '');
     tip.classList.add('on');
     placeTip();
@@ -404,47 +382,40 @@
     tipTimer = setTimeout(hideTip, 3200);
   });
 
-  // ---------------------------------------------------------------- frame loop
-  const state = { p: 0, year: D.start, view: null, k: 1, beatIndex: -2, filesKey: '' };
-  const filesEl = $('files'), beatEl = $('beat'), introEl = $('intro'), manifestoEl = $('manifesto');
+  // ---------------------------------------------------------------- camera
+  const journey = $('journey');
+  const filesEl = $('files'), beatEl = $('beat'), introEl = $('intro');
+  const state = { p: 0, year: D.start, view: null, beatIndex: -2, filesKey: '' };
 
   function scrollP() {
-    const max = document.documentElement.scrollHeight - innerHeight;
-    return max > 0 ? clamp(scrollY / max) : 0;
+    const r = journey.getBoundingClientRect();
+    const span = r.height - innerHeight;
+    return span > 0 ? clamp(-r.top / span) : 0;
   }
 
-  // screen space reserved for the HUD above and below the map
-  const pads = () => (innerWidth <= 720 ? { top: 150, bottom: 262 } : { top: 98, bottom: 252 });
+  // screen space the HUD keeps for itself
+  function layout() {
+    if (innerWidth >= 1080 && innerWidth / innerHeight > 1.2) return { top: 104, bottom: 34, maxD: innerWidth - 2 * 372 };
+    if (innerWidth <= 720) return { top: 150, bottom: 262, maxD: innerWidth - 20 };
+    return { top: 112, bottom: 262, maxD: innerWidth - 40 };
+  }
+
+  const tagsOn = () => innerWidth > 720;
 
   function targetView(year, s) {
-    const aspect = innerWidth / innerHeight;
-    const portrait = aspect < 1;
-    const pad = pads();
-    const bandH = Math.max(200, innerHeight - pad.top - pad.bottom);
-    const bandShift = pad.top + bandH / 2 - innerHeight / 2; // px the band centre sits below screen centre
-    const headX = X(year);
-    const journeyW = clamp((CONTENT_H / bandH) * innerWidth, 480, 3200);
-    const closeW = Math.min(journeyW, portrait ? 520 : 820);
-    // zoom from the dot out to the journey during the first part of W
-    let zoom = 0;
-    if (s.seg.kind === 'beat' && s.seg.index >= 1) zoom = s.seg.index === 1 ? ease(clamp(s.u / 0.35)) : 1;
-    if (s.seg.kind === 'end') zoom = 1;
-    let w = lerp(closeW, journeyW, zoom);
-    let cx = headX + w * (portrait ? 0.2 : 0.12);
-    let cy = lerp(0, CONTENT_CY, zoom);
-    // pull back at Meaning: the whole map on wide screens, the recent years plus the fog on phones
+    const L = layout();
+    const bandH = Math.max(180, innerHeight - L.top - L.bottom);
+    const half = Math.max(90, Math.min(bandH, L.maxD) / 2);
     let pull = 0;
-    if (finalBeat && s.seg === finalBeat) pull = ease(clamp(s.u / 0.6));
+    if (finalBeat && s.seg === finalBeat) pull = ease(clamp(s.u / 0.55));
     if (s.seg.kind === 'end') pull = 1;
-    if (pull > 0) {
-      const x0 = portrait ? X(D.now - 8) : X(D.start) - 160, x1 = FOG_X1 + 80;
-      const fullW = Math.max((x1 - x0) * 1.02, (CONTENT_H / bandH) * innerWidth);
-      w = lerp(w, fullW, pull);
-      cx = lerp(cx, (x0 + x1) / 2, pull);
-      cy = lerp(cy, CONTENT_CY, pull);
-    }
-    cy -= bandShift * (w / innerWidth);
-    return { cx, cy, w, h: w / aspect, pull, zoom };
+    // zoom out as the explored circle grows; the zone names need ~40px outside it
+    const kJourney = Math.max(190, R(year)) / Math.max(40, half - (tagsOn() ? 40 : 60));
+    const kFinal = (R_NOW + STUB) / Math.max(40, half - (tagsOn() ? 104 : 46));
+    const k = lerp(kJourney, kFinal, pull);
+    const w = k * innerWidth;
+    const shift = L.top + bandH / 2 - innerHeight / 2;
+    return { cx: 0, cy: -shift * k, w, h: w / (innerWidth / innerHeight), pull };
   }
 
   function setBeat(i) {
@@ -468,15 +439,15 @@
     const active = threads
       .filter((t) => year >= t.start && (!t.ended || year <= t.end + 0.9))
       .sort((a, b) => b.start - a.start);
-    const shown = active.slice(0, 4);
+    const shown = active.slice(0, final ? 3 : 4);
     const savedCount = threads.filter((t) => t.ended && year > t.end + 0.15).length;
     const rows = shown.map((t) => {
       const st = stateAt(t, year);
       const glyph = st === 'saved' ? '○' : st === 'blink' ? '◐' : '●';
       return `<div class="row"><span><span class="st ${st === 'blink' ? 'blink' : st === 'saved' ? 'saved' : ''}">${glyph}</span>${t.file}</span><span class="sz">${fmt(sizeAt(t, year))}</span></div>`;
     });
+    if (final) rows.push(`<div class="row nextrow"><span><span class="st">◌</span>next.swayam</span><span class="sz">0 KB × ${live.length}</span></div>`);
     const more = active.length - shown.length;
-    if (final) rows.push('<div class="row"><span><span class="st">◌</span>next.swayam</span><span class="sz">0 KB</span></div>');
     const tail = [];
     if (more > 0) tail.push(`${more} more open`);
     if (savedCount) tail.push(`${savedCount} saved`);
@@ -486,6 +457,17 @@
     if (html !== state.filesKey) { filesEl.innerHTML = html; state.filesKey = html; }
   }
 
+  // text that runs along a radius, kept upright
+  function alongRadius(el, x, y, a, outward, k, gap) {
+    const right = Math.cos(a) >= 0;
+    const deg = a * DEG + (right ? 0 : 180);
+    const anchor = outward === right ? 'start' : 'end';
+    const d = (outward ? 1 : -1) * gap * k;
+    el.setAttribute('text-anchor', anchor);
+    el.setAttribute('transform', `translate(${(x + Math.cos(a) * d).toFixed(1)} ${(y + Math.sin(a) * d).toFixed(1)}) rotate(${deg.toFixed(2)})`);
+  }
+
+  // ---------------------------------------------------------------- frame loop
   let last = performance.now();
   let lastK = 0;
   function frame(now) {
@@ -497,10 +479,9 @@
     const s = sample(state.p);
     state.year = s.year;
     const tv = targetView(s.year, s);
-    const v = state.view ? {
-      cx: lerp(state.view.cx, tv.cx, a), cy: lerp(state.view.cy, tv.cy, a),
-      w: lerp(state.view.w, tv.w, a), h: 0, pull: tv.pull, zoom: tv.zoom,
-    } : tv;
+    const v = state.view
+      ? { cx: lerp(state.view.cx, tv.cx, a), cy: lerp(state.view.cy, tv.cy, a), w: lerp(state.view.w, tv.w, a), pull: tv.pull }
+      : tv;
     v.h = v.w / (innerWidth / innerHeight);
     state.view = v;
     const k = v.w / innerWidth;
@@ -508,40 +489,69 @@
     svg.setAttribute('viewBox', `${vx.toFixed(2)} ${vy.toFixed(2)} ${v.w.toFixed(2)} ${v.h.toFixed(2)}`);
     svg.style.setProperty('--k', k.toFixed(4));
 
-    const headX = X(state.year);
-    revealRect.setAttribute('width', (headX + 3000).toFixed(1));
-    head.setAttribute('transform', `translate(${headX.toFixed(1)} 0)`);
-
-    if (Math.abs(k - lastK) / k > 0.01) {
-      lastK = k;
-      nodes.forEach((n) => n.setAttribute('r', (3.2 * k).toFixed(2)));
-      halo.setAttribute('r', (17 * k).toFixed(2));
-      headDot.setAttribute('r', (5.5 * k).toFixed(2));
-      nextDot.setAttribute('r', (4 * k).toFixed(2));
-      nextPath.setAttribute('stroke-width', (1.6 * k).toFixed(2));
-      nextPath.setAttribute('stroke-dasharray', `${(5 * k).toFixed(2)} ${(7 * k).toFixed(2)}`);
-      threads.forEach((t) => t.tipDot.setAttribute('r', (2.6 * k).toFixed(2)));
-      const every = 120 / k < 46 ? 2 : 1;
-      yearTexts.forEach((tx) => tx.setAttribute('opacity', (tx.year - D.start) % every === 0 ? 1 : 0));
+    const known = R(state.year);
+    revealCircle.setAttribute('r', known.toFixed(1));
+    coast.setAttribute('r', known.toFixed(1));
+    const final = v.pull > 0.5;
+    ringYear.textContent = state.year >= D.now - 0.01 ? 'now' : yearLabel(state.year);
+    {
+      const ya = regions[0].a0;
+      const [x, y] = polar(known + 12 * k, ya);
+      ringYear.setAttribute('x', x.toFixed(1));
+      ringYear.setAttribute('y', y.toFixed(1));
     }
 
-    // terrain redraws only when the camera moves; the torch is a CSS mask over the lit copy
-    if (!drawn || Math.abs(drawn.vx - vx) > k * 0.25 || Math.abs(drawn.vy - vy) > k * 0.25 || Math.abs(drawn.w - v.w) > k * 0.25) {
-      drawTerrain(vx, vy, v.w, v.h);
-      drawn = { vx, vy, w: v.w };
+    if (!drawn || Math.abs(drawn.vx - vx) > k * 0.3 || Math.abs(drawn.vy - vy) > k * 0.3 || Math.abs(drawn.w - v.w) > k * 0.3 || Math.abs(drawn.known - known) > k * 0.5) {
+      drawTerrain(vx, vy, v.w, v.h, known);
+      drawn = { vx, vy, w: v.w, known };
     }
     let tx = pointer.x, ty = pointer.y;
     if (!finePointer && now - pointer.moved > 2500) {
       const t = now / 1000;
-      tx = innerWidth * (0.5 + 0.28 * Math.sin(t * 0.31));
-      ty = innerHeight * (0.5 + 0.22 * Math.sin(t * 0.47 + 1));
+      tx = innerWidth * (0.5 + 0.26 * Math.sin(t * 0.31));
+      ty = innerHeight * (0.42 + 0.2 * Math.sin(t * 0.47 + 1));
     }
     lCan.style.setProperty('--tx', tx.toFixed(0) + 'px');
     lCan.style.setProperty('--ty', ty.toFixed(0) + 'px');
     if (finePointer) cursor.style.transform = `translate(${pointer.x}px, ${pointer.y}px)`;
 
-    // threads, labels
-    const showLabels = 1 / k > 0.62 && v.pull < 0.3;
+    if (Math.abs(k - lastK) / k > 0.01) {
+      lastK = k;
+      nodes.forEach((n) => n.setAttribute('r', (3.2 * k).toFixed(2)));
+      live.forEach((t) => {
+        t.stubNode.setAttribute('r', (3.4 * k).toFixed(2));
+        alongRadius(t.nextText, t.stubEnd[0], t.stubEnd[1], t.stubEnd[3], true, k, 8);
+      });
+      threads.forEach((t) => t.tipDot.setAttribute('r', (2.6 * k).toFixed(2)));
+      halo.setAttribute('r', (17 * k).toFixed(2));
+      centreRing.setAttribute('r', (11 * k).toFixed(2));
+      centreDot.setAttribute('r', (5 * k).toFixed(2));
+      centreLabel.setAttribute('y', (26 * k).toFixed(1));
+      unknownTexts.forEach((tx) => {
+        const [x, y] = polar(R_NOW + STUB + (tagsOn() ? 96 : 30) * k, tx.angle);
+        tx.setAttribute('x', x.toFixed(1));
+        tx.setAttribute('y', (y + 4 * k).toFixed(1));
+      });
+    }
+
+    // zones: named on the edge once they have been reached
+    regions.forEach((r) => {
+      const reached = state.year >= r.start;
+      const inside = v.pull > 0.5;
+      const zoneA = (r.a0 + r.mid) / 2; // between the border and the main road
+      const rr = lerp(known + 16 * k, R_NOW * 0.6, v.pull);
+      const a = lerp(r.mid, zoneA, v.pull);
+      const [x, y] = polar(rr, a);
+      const c = Math.cos(a), sn = Math.sin(a);
+      r.text.setAttribute('text-anchor', inside ? 'middle' : c > 0.35 ? 'start' : c < -0.35 ? 'end' : 'middle');
+      r.text.setAttribute('x', x.toFixed(1));
+      r.text.setAttribute('y', (y + (inside ? 4 * k : sn > 0.35 ? 9 * k : sn > -0.35 ? 4 * k : 0)).toFixed(1));
+      r.text.setAttribute('opacity', reached ? 1 : 0);
+      r.text.classList.toggle('inside', inside);
+    });
+
+    // threads and their labels
+    const showLabels = !final && 1 / k > 0.22;
     let storm = false;
     threads.forEach((t) => {
       const st = stateAt(t, state.year);
@@ -549,18 +559,19 @@
       t.g.classList.toggle('flickering', st === 'flicker');
       if (st === 'flicker') storm = true;
       const writing = st && st !== 'saved';
-      const visible = showLabels && st && headX >= t.bendX && (writing || state.year <= t.end + 0.9);
+      const tipR = Math.min(known, R(t.end));
+      const p = atR(t.pts, tipR);
       if (writing) {
-        const x = Math.min(headX, X(t.end));
-        const y = yOnPts(t.pts, x);
-        t.tipDot.setAttribute('cx', x.toFixed(1));
-        t.tipDot.setAttribute('cy', y.toFixed(1));
+        t.tipDot.setAttribute('cx', p[0].toFixed(1));
+        t.tipDot.setAttribute('cy', p[1].toFixed(1));
       }
-      t.tipDot.setAttribute('opacity', writing && headX > X(t.start) + 4 ? 1 : 0);
+      t.tipDot.setAttribute('opacity', writing && known > R(t.start) + 3 ? 1 : 0);
+      const visible = showLabels && st && known >= t.bendR && (writing || state.year <= t.end + 0.9);
       if (visible) {
-        const x = Math.min(headX, X(t.end));
-        t.label.setAttribute('x', (x + 9 * k).toFixed(1));
-        t.label.setAttribute('y', (yOnPts(t.pts, x) - 7 * k).toFixed(1));
+        // run the label inward along the line, just off to one side of it
+        const off = 5 * k;
+        const px = p[0] + Math.cos(p[3] - Math.PI / 2) * off, py = p[1] + Math.sin(p[3] - Math.PI / 2) * off;
+        alongRadius(t.label, px, py, p[3], false, k, 6);
         const sz = fmt(sizeAt(t, state.year));
         if (t.labelSize.textContent !== sz) t.labelSize.textContent = sz;
       }
@@ -568,35 +579,23 @@
       t.label.setAttribute('opacity', visible ? 1 : 0);
     });
     stage.classList.toggle('storm', storm);
-    axis.style.opacity = clamp(v.zoom * 1.4 - 0.4).toFixed(2);
-    svg.classList.toggle('final', v.pull > 0.5);
-
-    const leftX = vx + 22 * k;
-    regions.forEach((r) => {
-      r.text.setAttribute('x', leftX.toFixed(1));
-      r.text.setAttribute('y', (r.topLane - 9 * k).toFixed(1));
-    });
-    nextName.setAttribute('x', (FOG_X0 + 150 + 12 * k).toFixed(1));
-    nextName.setAttribute('y', (-4 * k).toFixed(1));
-    nextSize.setAttribute('x', (FOG_X0 + 150 + 12 * k).toFixed(1));
-    nextSize.setAttribute('y', (11 * k).toFixed(1));
-    unknownLabel.setAttribute('x', (FOG_X0 + 150 + 12 * k).toFixed(1));
-    unknownLabel.setAttribute('y', (MIN_Y + 10 * k).toFixed(1));
-    coreLabel.setAttribute('x', Math.max(leftX, X(D.start) - 4).toFixed(1));
-    coreLabel.setAttribute('y', (-10 * k).toFixed(1));
+    svg.classList.toggle('final', final);
 
     // HUD
-    introEl.style.opacity = (1 - clamp((state.p - 0.012) / 0.045)).toFixed(3);
-    manifestoEl.style.opacity = clamp((state.p - (segs[segs.length - 1].p0 - 0.015)) / 0.04).toFixed(3);
+    introEl.style.opacity = (1 - clamp((state.p - 0.01) / 0.04)).toFixed(3);
     segs.forEach((g) => {
       if (g.kind !== 'beat') return;
       const on = state.p >= g.p0 + (g.p1 - g.p0) * (g === finalBeat ? 0.45 : 0.2);
       letterLis[g.beat.letter].classList.toggle('lit', on);
     });
-    const inBeat = s.seg.kind === 'beat' ? s.seg.index : -1;
-    setBeat(inBeat);
-    filesEl.style.opacity = s.seg.kind === 'intro' ? clamp(s.u * 3) : s.seg.kind === 'end' ? 1 - clamp(s.u * 3) : 1;
-    renderFiles(state.year, v.pull > 0.5);
+    setBeat(s.seg.kind === 'beat' ? s.seg.index : -1);
+    // panels leave with the map once the journey is over
+    const jr = journey.getBoundingClientRect();
+    const leave = clamp((jr.bottom - innerHeight * 0.55) / (innerHeight * 0.45));
+    const enter = s.seg.kind === 'intro' ? clamp(s.u * 3) : 1;
+    filesEl.style.opacity = (enter * leave).toFixed(3);
+    beatEl.style.opacity = leave.toFixed(3);
+    renderFiles(state.year, final);
 
     requestAnimationFrame(frame);
   }

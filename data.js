@@ -37,23 +37,23 @@ window.SWAYAM = {
 
   threads: [
     // mind/
-    { id: 'storybooks', file: 'storybooks.swayam', region: 'mind', start: 2004.5,
+    { id: 'storybooks', scribble: { text: 'read everything. then it faded.', at: 2012.6 }, file: 'storybooks.swayam', region: 'mind', start: 2004.5,
       phases: [{ state: 'glow', to: 2013 }], note: 'Reading and storybooks. The first thread of all.' },
     { id: 'self-help', file: 'self-help.swayam', region: 'mind', start: 2008,
       phases: [{ state: 'glow', to: null }] },
     { id: 'knowledge', file: 'knowledge.swayam', region: 'mind', start: 2011,
       phases: [{ state: 'glow', to: null }], note: 'Learning how things work.' },
-    { id: 'politics', file: 'politics.swayam', region: 'mind', start: 2024.6,
+    { id: 'politics', scribble: { text: 'came late. still reading.', at: 2025.4 }, file: 'politics.swayam', region: 'mind', start: 2024.6,
       phases: [{ state: 'glow', to: null }], note: 'Reading about it, following it.' },
 
     // rhythm/
     { id: 'dancing', file: 'dancing.swayam', region: 'rhythm', start: 2005.2,
       phases: [{ state: 'glow', to: 2008.5 }] },
-    { id: 'singing', file: 'singing.swayam', region: 'rhythm', start: 2006,
+    { id: 'singing', scribble: { text: 'on and off. never stopped.', at: 2020.2 }, file: 'singing.swayam', region: 'rhythm', start: 2006,
       phases: [{ state: 'glow', to: 2019.5 }, { state: 'blink', to: null }] },
 
     // play/
-    { id: 'cricket', file: 'cricket.swayam', region: 'play', start: 2007,
+    { id: 'cricket', scribble: { text: 'still play. just not every week.', at: 2020.6 }, file: 'cricket.swayam', region: 'play', start: 2007,
       phases: [{ state: 'glow', to: 2019.5 }, { state: 'blink', to: null }] },
     { id: 'shooting', file: 'shooting.swayam', region: 'play', start: 2024.3,
       phases: [{ state: 'glow', to: 2024.9 }], note: 'Tried it.' },
@@ -75,7 +75,7 @@ window.SWAYAM = {
       phases: [{ state: 'glow', to: null }], note: 'People and cultures.' },
     { id: 'countries', file: 'countries.swayam', region: 'roads', start: 2025,
       phases: [{ state: 'glow', to: null }], note: 'States and countries.' },
-    { id: 'solo-travel', file: 'solo-travel.swayam', region: 'roads', start: 2025.4,
+    { id: 'solo-travel', scribble: { text: 'the last one, so far.', at: 2026 }, file: 'solo-travel.swayam', region: 'roads', start: 2025.4,
       phases: [{ state: 'glow', to: null }] },
 
     // frames/
@@ -87,18 +87,18 @@ window.SWAYAM = {
       phases: [{ state: 'glow', to: null }] },
 
     // build/
-    { id: 'cybersecurity', file: 'cybersecurity.swayam', region: 'build', start: 2014,
+    { id: 'cybersecurity', scribble: { text: 'blinking till the CEH.', at: 2018.6 }, file: 'cybersecurity.swayam', region: 'build', start: 2014,
       phases: [{ state: 'glow', to: 2018 }, { state: 'blink', to: null }],
       note: 'White-hat enthusiast. Back to glowing after CEH.' },
     { id: 'venture-01', file: 'venture-01.swayam', region: 'build', start: 2020.9,
       phases: [{ state: 'glow', to: 2021.6 }], note: 'Started. Stopped. Saved.' },
-    { id: 'venture-02', file: 'venture-02.swayam', region: 'build', start: 2021.7,
+    { id: 'venture-02', scribble: { text: 'three businesses. three saves.', at: 2022.4 }, file: 'venture-02.swayam', region: 'build', start: 2021.7,
       phases: [{ state: 'glow', to: 2022.3 }], note: 'Started. Stopped. Saved.' },
     { id: 'venture-03', file: 'venture-03.swayam', region: 'build', start: 2022.4,
       phases: [{ state: 'glow', to: 2023 }], note: 'Started. Stopped. Saved.' },
-    { id: 'engineering', file: 'engineering.swayam', region: 'build', start: 2015.6,
+    { id: 'engineering', scribble: { text: 'wasn’t sure it would grow. kept going.', at: 2017.4 }, file: 'engineering.swayam', region: 'build', start: 2015.6,
       phases: [{ state: 'flicker', to: 2020.1 }], note: 'Not sure it would grow into anything. Kept going.' },
-    { id: 'cloud', file: 'cloud.swayam', region: 'build', start: 2020.1, from: 'engineering',
+    { id: 'cloud', scribble: { text: 'then the job landed.', at: 2020.6 }, file: 'cloud.swayam', region: 'build', start: 2020.1, from: 'engineering',
       phases: [{ state: 'glow', to: null }], note: 'Cloud and DevOps, across four countries.' },
     { id: 'teams', file: 'leading-teams.swayam', region: 'build', start: 2022.8, from: 'cloud',
       phases: [{ state: 'glow', to: null }] },

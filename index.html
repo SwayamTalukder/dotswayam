@@ -7,9 +7,9 @@
   <meta name="description" content="Swayam Talukder. I am my first project.">
   <meta name="theme-color" content="#15130F">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2315130F'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23D4AF37'/%3E%3C/svg%3E">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=IBM+Plex+Mono:wght@400;500&family=Karla:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="preload" href="fonts/archivo-wdth.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/im-fell-english-sc.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/nanum-pen-script.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,8 +18,20 @@
       <canvas id="terrain" class="terrain"></canvas>
       <canvas id="terrain-lit" class="terrain-lit"></canvas>
       <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="vignette"></div>
     </div>
   </section>
+
+  <!-- the map sheet: frame, title, north arrow -->
+  <div class="sheet" aria-hidden="true">
+    <div class="neatline"></div>
+    <div class="charted" id="charted"><span>charted to</span> <b id="year">2003</b></div>
+    <svg class="north" viewBox="0 0 40 64" aria-hidden="true">
+      <path d="M20 6 L28 40 L20 33 L12 40 Z" />
+      <path class="half" d="M20 6 L20 33 L12 40 Z" />
+      <text x="20" y="58" text-anchor="middle">N</text>
+    </svg>
+  </div>
 
   <header class="hud-top">
     <a class="wordmark" href="#" aria-label=".swayam, back to the start"><span class="dot">.</span>swayam</a>
@@ -32,7 +44,15 @@
     <p class="intro-hint">Scroll to start the journey</p>
   </section>
 
-  <aside class="files" id="files" aria-hidden="true"></aside>
+  <aside class="legend" id="legend" aria-hidden="true">
+    <div class="files" id="files"></div>
+    <div class="key">
+      <span><i class="k-glow"></i>writing</span>
+      <span><i class="k-blink"></i>on and off</span>
+      <span><i class="k-saved"></i>saved</span>
+    </div>
+    <div class="scale"><i id="scalebar"></i><span id="scaletext">1 year</span></div>
+  </aside>
 
   <article class="beat" id="beat" aria-live="polite"></article>
 

@@ -24,7 +24,8 @@
   const RPY = 44;         // world units per year
   const R = (year) => R0 + Math.max(0, year - D.start) * RPY;
   const R_NOW = R(D.now);
-  const STUB = 74;        // how far live branches run past the edge
+  const R_EDGE = R_NOW + 26; // the outline of the known world
+  const STUB = 80;        // how far live branches run past the edge
   const polar = (r, a) => [r * Math.cos(a), r * Math.sin(a)];
 
   // ---------------------------------------------------------------- data
@@ -140,7 +141,7 @@
     8: [[3, 0]], 9: [[0, 2]], 10: [[0, 1], [3, 2]], 11: [[0, 1]], 12: [[3, 1]], 13: [[2, 1]], 14: [[3, 2]],
   };
   function contourSegments() {
-    const step = 22, ext = R_NOW + 40;
+    const step = 22, ext = R_EDGE + 30;
     const x0 = -ext, y0 = -ext;
     const nx = Math.ceil((2 * ext) / step) + 1, ny = nx;
     const v = new Float32Array(nx * ny);
@@ -235,10 +236,23 @@
   const revealCircle = svgEl('circle', { cx: 0, cy: 0, r: R0 }, revealClip);
 
   // zone borders and the main road into each zone
-  const charted = svgEl('g', { 'clip-path': 'url(#reveal)' }, svg);
+  const base = svgEl('g', {}, svg);
   regions.forEach((r) => {
-    svgEl('path', { class: 'border', d: toD(radialPts(R0 + 14, R_NOW, (rad) => borderA(r, rad))) }, charted);
+    svgEl('path', { class: 'border', d: toD(radialPts(R0 + 18, R_EDGE, (rad) => borderA(r, rad))) }, base);
   });
+  // the coastline of the known, with a few ripples outside it like an old chart
+  const coastPts = (off, wob) => {
+    const pts = [];
+    for (let i = 0; i <= 360; i++) {
+      const a = (i / 360) * TAU;
+      const rr = R_EDGE + off + wob * (6 * Math.sin(a * 7 + 1.3) + 3.5 * Math.sin(a * 17 + 0.4) + 2 * Math.sin(a * 31));
+      pts.push([rr * Math.cos(a), rr * Math.sin(a)]);
+    }
+    return 'M' + pts.map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' L') + 'Z';
+  };
+  svgEl('path', { class: 'coastline', d: coastPts(0, 1) }, base);
+  [10, 20, 32].forEach((off, i) => svgEl('path', { class: 'coast-hatch', d: coastPts(off, 1 - i * 0.25), 'stroke-opacity': (0.16 - i * 0.04).toFixed(2) }, base));
+  const charted = svgEl('g', { 'clip-path': 'url(#reveal)' }, svg);
   regions.forEach((r) => {
     r.road = svgEl('path', { class: 'road', d: toD(radialPts(R0 * 0.6, R(r.roadEnd), (rad) => roadA(r, rad))) }, charted);
   });
@@ -264,8 +278,6 @@
 
   // the edge of the known, its year, and the zone names around it
   const overlay = svgEl('g', { class: 'overlay' }, svg);
-  const coast = svgEl('circle', { class: 'coast', cx: 0, cy: 0, r: R0 }, overlay);
-  const ringYear = svgEl('text', { class: 'ring-year', 'text-anchor': 'end' }, overlay);
   regions.forEach((r) => {
     r.text = svgEl('text', { class: 'zone-label' }, overlay);
     r.text.textContent = r.label;
@@ -275,7 +287,7 @@
   const next = svgEl('g', { class: 'next' }, overlay);
   const live = threads.filter((t) => !t.ended);
   live.forEach((t) => {
-    const pts = radialPts(R_NOW, R_NOW + STUB, (rad) => threadA(t, rad), 6);
+    const pts = radialPts(R_NOW, R_EDGE + STUB, (rad) => threadA(t, rad), 6);
     t.stub = svgEl('path', { class: 'stub', d: toD(pts) }, next);
     const e = pts[pts.length - 1];
     t.stubEnd = e;
@@ -298,6 +310,20 @@
     t.labelName.textContent = t.file;
     t.labelSize = svgEl('tspan', { class: 'size', dx: '0.7em' }, t.label);
     t.tipDot = svgEl('circle', { class: 'tipdot', r: 2.5, opacity: 0 }, labels);
+  });
+
+  // handwritten margin notes
+  const notes = svgEl('g', {}, overlay);
+  threads.filter((t) => t.scribble).forEach((t) => {
+    const at = clamp(t.scribble.at, t.start + 0.2, t.end);
+    const p = atR(t.pts, R(at));
+    const sideSign = t.angle >= t.zone.mid ? 1 : -1;
+    const g = svgEl('g', { class: 'scribble', opacity: 0 }, notes);
+    const arrow = svgEl('path', {}, g);
+    const text = svgEl('text', {}, g);
+    text.textContent = t.scribble.text;
+    t.note = t.note || '';
+    t.scrib = { at, p, sideSign, g, arrow, text };
   });
 
   // self at the centre
@@ -384,7 +410,8 @@
 
   // ---------------------------------------------------------------- camera
   const journey = $('journey');
-  const filesEl = $('files'), beatEl = $('beat'), introEl = $('intro');
+  const filesEl = $('files'), beatEl = $('beat'), introEl = $('intro'), legendEl = $('legend');
+  const yearEl = $('year'), scaleBar = $('scalebar'), scaleText = $('scaletext');
   const state = { p: 0, year: D.start, view: null, beatIndex: -2, filesKey: '' };
 
   function scrollP() {
@@ -393,29 +420,35 @@
     return span > 0 ? clamp(-r.top / span) : 0;
   }
 
-  // screen space the HUD keeps for itself
-  function layout() {
-    if (innerWidth >= 1080 && innerWidth / innerHeight > 1.2) return { top: 104, bottom: 34, maxD: innerWidth - 2 * 372 };
-    if (innerWidth <= 720) return { top: 150, bottom: 262, maxD: innerWidth - 20 };
-    return { top: 112, bottom: 262, maxD: innerWidth - 40 };
+  // screen space the HUD keeps for itself in the final, whole-map view
+  function finalBand() {
+    if (innerWidth >= 1080 && innerWidth / innerHeight > 1.2) return { top: 110, bottom: 44, maxD: innerWidth - 2 * 360 };
+    if (innerWidth <= 720) return { top: 150, bottom: 262, maxD: innerWidth - 16 };
+    return { top: 120, bottom: 262, maxD: innerWidth - 40 };
   }
-
   const tagsOn = () => innerWidth > 720;
 
   function targetView(year, s) {
-    const L = layout();
-    const bandH = Math.max(180, innerHeight - L.top - L.bottom);
-    const half = Math.max(90, Math.min(bandH, L.maxD) / 2);
+    const W = innerWidth, H = innerHeight;
+    // during the journey the map fills the screen: centred, the explored
+    // radius reaching the far corners, so the edge stays out of sight
+    const shift = W <= 720 ? -60 : 0;
+    const halfMin = Math.min(W / 2, H / 2 - Math.abs(shift));
+    const halfDiag = Math.hypot(W / 2, H / 2 + Math.abs(shift));
+    const kJourney = Math.max(170 / halfMin, (R(year) * 1.04) / halfDiag);
+    // at Meaning the camera pulls right back until the outline and the unknown show
+    const B = finalBand();
+    const bandH = Math.max(180, H - B.top - B.bottom);
+    const half = Math.max(90, Math.min(bandH, B.maxD) / 2);
+    const kFinal = (R_EDGE + STUB) / Math.max(40, half - (tagsOn() ? 100 : 40));
     let pull = 0;
-    if (finalBeat && s.seg === finalBeat) pull = ease(clamp(s.u / 0.55));
+    if (finalBeat && s.seg === finalBeat) pull = ease(clamp(s.u / 0.6));
     if (s.seg.kind === 'end') pull = 1;
-    // zoom out as the explored circle grows; the zone names need ~40px outside it
-    const kJourney = Math.max(190, R(year)) / Math.max(40, half - (tagsOn() ? 40 : 60));
-    const kFinal = (R_NOW + STUB) / Math.max(40, half - (tagsOn() ? 104 : 46));
-    const k = lerp(kJourney, kFinal, pull);
-    const w = k * innerWidth;
-    const shift = L.top + bandH / 2 - innerHeight / 2;
-    return { cx: 0, cy: -shift * k, w, h: w / (innerWidth / innerHeight), pull };
+    const k = lerp(kJourney, Math.max(kJourney, kFinal), pull);
+    const finalShift = B.top + bandH / 2 - H / 2;
+    const sh = lerp(shift, finalShift, pull);
+    const w = k * W;
+    return { cx: 0, cy: -sh * k, w, h: w / (W / H), pull };
   }
 
   function setBeat(i) {
@@ -491,18 +524,9 @@
 
     const known = R(state.year);
     revealCircle.setAttribute('r', known.toFixed(1));
-    coast.setAttribute('r', known.toFixed(1));
     const final = v.pull > 0.5;
-    ringYear.textContent = state.year >= D.now - 0.01 ? 'now' : yearLabel(state.year);
-    {
-      const ya = regions[0].a0;
-      const [x, y] = polar(known + 12 * k, ya);
-      ringYear.setAttribute('x', x.toFixed(1));
-      ringYear.setAttribute('y', y.toFixed(1));
-    }
-
-    if (!drawn || Math.abs(drawn.vx - vx) > k * 0.3 || Math.abs(drawn.vy - vy) > k * 0.3 || Math.abs(drawn.w - v.w) > k * 0.3 || Math.abs(drawn.known - known) > k * 0.5) {
-      drawTerrain(vx, vy, v.w, v.h, known);
+    if (!drawn || Math.abs(drawn.vx - vx) > k * 0.3 || Math.abs(drawn.vy - vy) > k * 0.3 || Math.abs(drawn.w - v.w) > k * 0.3) {
+      drawTerrain(vx, vy, v.w, v.h, R_EDGE);
       drawn = { vx, vy, w: v.w, known };
     }
     let tx = pointer.x, ty = pointer.y;
@@ -528,26 +552,45 @@
       centreDot.setAttribute('r', (5 * k).toFixed(2));
       centreLabel.setAttribute('y', (26 * k).toFixed(1));
       unknownTexts.forEach((tx) => {
-        const [x, y] = polar(R_NOW + STUB + (tagsOn() ? 96 : 30) * k, tx.angle);
+        const [x, y] = polar(R_EDGE + STUB + (tagsOn() ? 100 : 34) * k, tx.angle);
         tx.setAttribute('x', x.toFixed(1));
         tx.setAttribute('y', (y + 4 * k).toFixed(1));
       });
     }
 
-    // zones: named on the edge once they have been reached
+    // zones: lettered inside their territory at a steady place on screen
+    const halfMinNow = Math.min(innerWidth, innerHeight) / 2;
     regions.forEach((r) => {
-      const reached = state.year >= r.start;
-      const inside = v.pull > 0.5;
-      const zoneA = (r.a0 + r.mid) / 2; // between the border and the main road
-      const rr = lerp(known + 16 * k, R_NOW * 0.6, v.pull);
-      const a = lerp(r.mid, zoneA, v.pull);
-      const [x, y] = polar(rr, a);
-      const c = Math.cos(a), sn = Math.sin(a);
-      r.text.setAttribute('text-anchor', inside ? 'middle' : c > 0.35 ? 'start' : c < -0.35 ? 'end' : 'middle');
+      const rr = lerp(Math.min(R_NOW * 0.6, k * halfMinNow * 0.6), R_NOW * 0.6, v.pull);
+      const a = (r.a0 + r.mid) / 2;
+      const [x, y] = polar(Math.max(70, rr), a);
+      r.text.setAttribute('text-anchor', 'middle');
       r.text.setAttribute('x', x.toFixed(1));
-      r.text.setAttribute('y', (y + (inside ? 4 * k : sn > 0.35 ? 9 * k : sn > -0.35 ? 4 * k : 0)).toFixed(1));
-      r.text.setAttribute('opacity', reached ? 1 : 0);
-      r.text.classList.toggle('inside', inside);
+      r.text.setAttribute('y', (y + 5 * k).toFixed(1));
+      r.text.classList.toggle('lit', state.year >= r.start);
+    });
+
+    // handwritten notes show for a few years after their moment
+    threads.forEach((t) => {
+      const sc = t.scrib;
+      if (!sc) return;
+      const on = !final && state.year >= sc.at && state.year <= sc.at + 4.2 && 1 / k > 0.22;
+      sc.g.setAttribute('opacity', on ? 1 : 0);
+      if (!on) return;
+      const [px, py, , pa] = sc.p;
+      const tx = Math.cos(pa + Math.PI / 2) * sc.sideSign, ty = Math.sin(pa + Math.PI / 2) * sc.sideSign;
+      const rx = Math.cos(pa), ry = Math.sin(pa);
+      const sx = px + tx * 46 * k - rx * 10 * k, sy = py + ty * 46 * k - ry * 10 * k;   // where the text starts
+      const ex = px + tx * 7 * k, ey = py + ty * 7 * k;                                    // arrow tip, just off the line
+      const cxp = (sx + ex) / 2 + rx * 16 * k, cyp = (sy + ey) / 2 + ry * 16 * k;
+      const ang = Math.atan2(ey - cyp, ex - cxp), hl = 7 * k;
+      sc.arrow.setAttribute('d',
+        `M${(sx - tx * 4 * k).toFixed(1)} ${(sy - ty * 4 * k).toFixed(1)} Q${cxp.toFixed(1)} ${cyp.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}` +
+        ` M${ex.toFixed(1)} ${ey.toFixed(1)} l${(-Math.cos(ang - 0.5) * hl).toFixed(1)} ${(-Math.sin(ang - 0.5) * hl).toFixed(1)}` +
+        ` M${ex.toFixed(1)} ${ey.toFixed(1)} l${(-Math.cos(ang + 0.5) * hl).toFixed(1)} ${(-Math.sin(ang + 0.5) * hl).toFixed(1)}`);
+      const leftward = tx < 0;
+      sc.text.setAttribute('text-anchor', leftward ? 'end' : 'start');
+      sc.text.setAttribute('transform', `translate(${(sx + tx * 4 * k).toFixed(1)} ${(sy + ty * 4 * k + 6 * k).toFixed(1)}) rotate(-3)`);
     });
 
     // threads and their labels
@@ -581,7 +624,15 @@
     stage.classList.toggle('storm', storm);
     svg.classList.toggle('final', final);
 
-    // HUD
+    // HUD: the charted year and a scale bar that follows the zoom
+    const yr = state.year >= D.now - 0.01 ? 'now' : yearLabel(state.year);
+    if (yearEl.textContent !== yr) yearEl.textContent = yr;
+    const pxPerYear = RPY / k;
+    const unit = [1, 2, 5, 10].find((u) => u * pxPerYear >= 34) || 10;
+    scaleBar.style.width = Math.min(130, unit * pxPerYear).toFixed(0) + 'px';
+    const st = unit === 1 ? '1 year' : unit + ' years';
+    if (scaleText.textContent !== st) scaleText.textContent = st;
+
     introEl.style.opacity = (1 - clamp((state.p - 0.01) / 0.04)).toFixed(3);
     segs.forEach((g) => {
       if (g.kind !== 'beat') return;
@@ -593,7 +644,8 @@
     const jr = journey.getBoundingClientRect();
     const leave = clamp((jr.bottom - innerHeight * 0.55) / (innerHeight * 0.45));
     const enter = s.seg.kind === 'intro' ? clamp(s.u * 3) : 1;
-    filesEl.style.opacity = (enter * leave).toFixed(3);
+    legendEl.style.opacity = (enter * leave).toFixed(3);
+    $('charted').style.opacity = leave.toFixed(3);
     beatEl.style.opacity = leave.toFixed(3);
     renderFiles(state.year, final);
 
